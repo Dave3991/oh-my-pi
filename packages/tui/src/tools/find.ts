@@ -4,7 +4,7 @@
  * its strongest verified line ranges with a verbatim snippet.
  */
 import * as path from "node:path";
-import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import { renderProgressBar } from "../components/progress-bar";
 import { Text } from "../components/text";
 import { fileHyperlink, getTreeBranch, renderStatusLine, renderTreeList, uriHyperlink } from "../render";
@@ -55,6 +55,19 @@ export interface FindHit {
 	truncated: boolean;
 }
 
+/** A literal source line, not a semantic judgment. */
+export interface FindLiteralRange {
+	start: number;
+	end: number;
+	snippet: string;
+}
+
+/** Unranked keyword evidence from an eligible file whose content was read. */
+export interface FindLiteralHit {
+	rel: string;
+	ranges: FindLiteralRange[];
+}
+
 /**
  * How much of a search the judge actually covered. `unavailable`: every judge
  * request failed, so an empty result is not evidence of absence. `partial`:
@@ -95,6 +108,8 @@ export interface FindToolDetails {
 	/** Verified-passage probability at or above which a file is a hit. */
 	threshold: number;
 	hits: FindHit[];
+	/** Unscored literal evidence, present only when every judge request failed. */
+	lexicalHits?: FindLiteralHit[];
 	coverage: FindCoverage;
 	stats: FindStats;
 	elapsedMs: number;
@@ -262,6 +277,11 @@ export const findToolRenderer = {
 		const text = result.content?.find(c => c.type === "text")?.text ?? "";
 
 		if (result.isError) {
+			if (details?.lexicalHits?.length) {
+				const display = replaceTabs(sanitizeText(text || "Unknown error")).split("\n");
+				display[0] = formatErrorMessage(display[0], uiTheme);
+				return new Text(display.join("\n"), 0, 0);
+			}
 			return new Text(formatErrorMessage(text || "Unknown error", uiTheme), 0, 0);
 		}
 

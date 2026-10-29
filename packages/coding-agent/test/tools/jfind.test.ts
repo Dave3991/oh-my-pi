@@ -298,16 +298,20 @@ describe("jfind cascade", () => {
 			expect(result.hits.map(hit => hit.rel)).toEqual(["a.ts"]);
 			expect(result.stats.failed).toBe(1);
 			expect(result.coverage).toBe("partial");
+			expect(result.lexicalHits).toBeUndefined();
 			expect(result.stats.failures).toEqual(["sketches: sketch backend down"]);
 		} finally {
 			await removeWithRetries(dir);
 		}
 	});
 
-	it("reports unavailable, not an empty result, when every judge request fails", async () => {
+	it("keeps judge failure explicit while returning readable unscored literal locations", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-cascade-down-"));
 		try {
-			await Bun.write(path.join(dir, "auth.ts"), "export function refreshToken() { return 1; }\n");
+			await Bun.write(
+				path.join(dir, "src", "auth.ts"),
+				"// fixture\nexport function refreshToken() { return 1; }\n",
+			);
 			vi.spyOn(ChainJudge.prototype, "judge").mockRejectedValue(new Error("402 billing account rejected"));
 			const tool = new FindTool({
 				cwd: dir,
@@ -317,13 +321,23 @@ describe("jfind cascade", () => {
 				settings: Settings.isolated({ "find.enabled": "on" }),
 				modelRegistry: {} as never,
 			});
-			const result = await tool.execute("x", { query: "token refresh", grep_keywords: ["refreshToken"] });
+			const result = await tool.execute("x", {
+				query: "token refresh",
+				grep_keywords: ["refreshToken"],
+				path: "src",
+			});
 			expect(result.isError).toBe(true);
 			expect(result.details?.coverage).toBe("unavailable");
 			expect(result.details?.stats.failed).toBe(result.details?.stats.requests);
+			expect(result.details?.hits).toEqual([]);
+			expect(result.details?.lexicalHits).toEqual([
+				{
+					rel: "src/auth.ts",
+					ranges: [{ start: 2, end: 2, snippet: "export function refreshToken() { return 1; }" }],
+				},
+			]);
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-			expect(text).toStartWith('find unavailable for "token refresh"');
-			expect(text).not.toContain("no hits");
+			expect(text).toContain("src/auth.ts:2");
 		} finally {
 			await removeWithRetries(dir);
 		}
@@ -332,7 +346,7 @@ describe("jfind cascade", () => {
 	it("keeps an empty result complete when the judge answered and nothing matched", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-cascade-empty-"));
 		try {
-			await Bun.write(path.join(dir, "a.ts"), "export const unrelated = 1;\n");
+			await Bun.write(path.join(dir, "a.ts"), "export function parseToken() { return 1; }\n");
 			const result = await runCascade({
 				root: { path: dir, type: "directory" },
 				filesystem: urlFs(dir),
@@ -343,6 +357,7 @@ describe("jfind cascade", () => {
 			});
 			expect(result.hits).toEqual([]);
 			expect(result.coverage).toBe("complete");
+			expect(result.lexicalHits).toBeUndefined();
 		} finally {
 			await removeWithRetries(dir);
 		}
@@ -453,6 +468,139 @@ describe("jfind cascade", () => {
 			).rejects.toThrow("line-range selectors are not supported");
 		} finally {
 			await removeWithRetries(dir);
+		}
+	});
+
+	it("uses full source lines for bounded literal evidence without widening file eligibility", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-literal-"));
+		try {
+			const first = 'const route = "CAFÉ FOO.*[BAR]";';
+			await Bun.write(
+				path.join(dir, "literal.ts"),
+				`// unrelated\n${first}\n${"🧪".repeat(2200)}refreshToken();\n// gap\nrefreshToken();\nrefreshToken();\n`,
+			);
+			await Bun.write(path.join(dir, "filename-refreshToken.ts"), "export const untouched = 1;\n");
+			await Bun.write(path.join(dir, "near.ts"), 'const unrelated = "foo123b";\n');
+			await Bun.write(path.join(dir, ".hidden.ts"), "refreshToken HIDDEN_CANARY\n");
+			await Bun.write(path.join(dir, ".env"), "refreshToken CONFIG_CANARY\n");
+			await Bun.write(path.join(dir, "credentials.pem"), "refreshToken CREDENTIAL_CANARY\n");
+			await Bun.write(path.join(dir, "binary.ts"), "\0refreshToken BINARY_CANARY\n");
+			const result = await runCascade({
+				root: { path: dir, type: "directory" },
+				filesystem: urlFs(dir),
+				query: "locate sentinel behavior",
+				extraKeywords: ["café", "foo.*[bar]", "refreshToken"],
+				judge: new FakeJudge(() => new Error("judge down")),
+				includeHidden: false,
+			});
+			expect(result.coverage).toBe("unavailable");
+			expect(result.hits).toEqual([]);
+			expect(result.lexicalHits).toEqual([
+				{
+					rel: "literal.ts",
+					ranges: [
+						{ start: 2, end: 2, snippet: first },
+						{ start: 3, end: 3, snippet: "🧪".repeat(100) },
+						{ start: 5, end: 5, snippet: "refreshToken();" },
+					],
+				},
+			]);
+		} finally {
+			await removeWithRetries(dir);
+		}
+	});
+
+	it("bounds outage evidence to the selected files and three matching lines per file", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-literal-limit-"));
+		try {
+			const names = Array.from({ length: 21 }, (_, index) => `file-${String(index).padStart(2, "0")}.ts`);
+			for (const name of names) {
+				await Bun.write(path.join(dir, name), "needle one\nneedle two\nneedle three\nneedle four\n");
+			}
+			const result = await runCascade({
+				root: { path: dir, type: "directory" },
+				filesystem: urlFs(dir),
+				query: "needle",
+				extraKeywords: [],
+				judge: new FakeJudge(() => new Error("judge down")),
+				includeHidden: false,
+			});
+			expect(result.lexicalHits).toEqual(
+				names.slice(0, 20).map(rel => ({
+					rel,
+					ranges: [
+						{ start: 1, end: 1, snippet: "needle one" },
+						{ start: 2, end: 2, snippet: "needle two" },
+						{ start: 3, end: 3, snippet: "needle three" },
+					],
+				})),
+			);
+		} finally {
+			await removeWithRetries(dir);
+		}
+	});
+
+	it("does not turn filename-only matches into literal source evidence", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-literal-empty-"));
+		try {
+			await Bun.write(path.join(dir, "refreshToken.ts"), "export const untouched = 1;\n");
+			const result = await runCascade({
+				root: { path: dir, type: "directory" },
+				filesystem: urlFs(dir),
+				query: "token refresh",
+				extraKeywords: ["refreshToken"],
+				judge: new FakeJudge(() => new Error("judge down")),
+				includeHidden: false,
+			});
+			expect(result.coverage).toBe("unavailable");
+			expect(result.hits).toEqual([]);
+			expect(result.lexicalHits).toEqual([]);
+		} finally {
+			await removeWithRetries(dir);
+		}
+	});
+
+	it("discards literal candidates when content judging recovers after filename failures", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-literal-recovery-"));
+		try {
+			await Bun.write(path.join(dir, "auth.ts"), "export function refreshToken() { return 1; }\n");
+			const result = await runCascade({
+				root: { path: dir, type: "directory" },
+				filesystem: urlFs(dir),
+				query: "token refresh",
+				extraKeywords: ["refreshToken"],
+				judge: new FakeJudge(request => ("tree" in stateOf(request) ? new Error("names down") : 0.9)),
+				includeHidden: false,
+			});
+			expect(result.coverage).toBe("partial");
+			expect(result.hits.map(hit => hit.rel)).toEqual(["auth.ts"]);
+			expect(result.lexicalHits).toBeUndefined();
+		} finally {
+			await removeWithRetries(dir);
+		}
+	});
+
+	it("keeps outage literal locations readable under an internal URL scope", async () => {
+		const filesystem = urlFs(process.cwd());
+		const root = await resolveSearchRoot(filesystem, "omp://tools/read.md", process.cwd());
+		const result = await runCascade({
+			root,
+			filesystem,
+			query: "read file",
+			extraKeywords: ["read"],
+			judge: new FakeJudge(() => new Error("judge down")),
+			includeHidden: false,
+		});
+		expect(result.coverage).toBe("unavailable");
+		expect(result.lexicalHits?.map(hit => resolveSearchResultPath(root.path, hit.rel))).toEqual([
+			"omp://tools/read.md",
+		]);
+		const source = await readText(filesystem, root.path, 4 * 1024 * 1024);
+		const sourceLines = source.text.split("\n");
+		for (const range of result.lexicalHits![0]!.ranges) {
+			const sourceLine = sourceLines[range.start - 1]!;
+			expect(range.end).toBe(range.start);
+			expect(sourceLine.toLowerCase()).toMatch(/read|file/);
 		}
 	});
 

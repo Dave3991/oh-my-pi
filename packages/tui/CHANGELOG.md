@@ -36,6 +36,7 @@
 - Fixed the LSP diagnostics view showing "No issues" for files whose language server had not reported yet; they now show as unverified ([#17293](https://github.com/can1357/oh-my-pi/pull/17293) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - Fixed Esc-Esc rewind in Tern opening on, and stepping onto, a turn that shows nothing (one interrupted before any output) instead of the last turn shown
 - Fixed a streamed code block losing every row that scrolled off screen before its closing fence arrived; finished lines now retire into scrollback while the fence is open ([#17333](https://github.com/can1357/oh-my-pi/pull/17333) by [@gzkGit777](https://github.com/gzkGit777))
+- Fixed the `find` error view hiding unscored literal keyword matches when every judge request failed; `FindToolDetails.lexicalHits` carries them, and the view lists them without score gauges and with source control sequences stripped
 
 ## [18.13.3] - 2026-10-28
 

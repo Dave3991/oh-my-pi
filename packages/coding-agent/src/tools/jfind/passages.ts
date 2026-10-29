@@ -4,8 +4,8 @@
  * windows are selected, sketched for routing, and finally judged verbatim.
  * Every reported range maps back to real line coordinates.
  */
-import type { FindRange } from "@oh-my-pi/pi-tui/tools/find";
-import { clipBytes, countOccurrences, lines } from "./text";
+import type { FindLiteralRange, FindRange } from "@oh-my-pi/pi-tui/tools/find";
+import { clipBytes, countOccurrences, lines, takeChars } from "./text";
 
 /** A contiguous run of tagged source lines (`L<n>| text`), 1-based inclusive. */
 export interface Passage {
@@ -18,6 +18,22 @@ export interface Passage {
 
 /** A judged line range with its yes-probability and a one-line preview; the shape the renderer consumes. */
 export type HeatRange = FindRange;
+
+/** Up to three literal matching lines from the full read, with unscored bounded previews. */
+export function literalRanges(text: string, keywords: readonly string[]): FindLiteralRange[] {
+	const source = lines(text);
+	const ranges: FindLiteralRange[] = [];
+	for (let index = 0; index < source.length && ranges.length < 3; index++) {
+		const line = source[index]!;
+		const lower = line.toLowerCase();
+		for (const keyword of keywords) {
+			if (countOccurrences(lower, keyword) === 0) continue;
+			ranges.push({ start: index + 1, end: index + 1, snippet: takeChars(line.trim(), 100) });
+			break;
+		}
+	}
+	return ranges;
+}
 
 /**
  * Contiguous whole-line windows bounded by bytes, including the final line. A

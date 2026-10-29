@@ -97,6 +97,7 @@
 - Fixed a configured default or dictation model that no longer resolves being replaced silently; omp now warns and names the model it uses instead ([#16297](https://github.com/can1357/oh-my-pi/pull/16297) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `lsp` finding no references for Rust files in another checkout than the session's, such as a sibling git worktree: that checkout is now added to the running language server's workspace, without starting another server ([#16271](https://github.com/can1357/oh-my-pi/pull/16271) by [@will-bogusz](https://github.com/will-bogusz))
 - macOS computer-use tasks now open apps that may have no window and inspect the returned window in one call, while known-open windows and read-only work keep window lookup ([#16925](https://github.com/can1357/oh-my-pi/pull/16925) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed `find` returning only an error when every judge request fails; the error now also lists unscored literal keyword matches from the files it already read, so you can follow them up without rerunning the search with `grep`
 
 ## [18.13.3] - 2026-10-28
 

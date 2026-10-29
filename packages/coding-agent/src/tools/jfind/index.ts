@@ -136,6 +136,10 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 			...hit,
 			rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), cwd),
 		}));
+		const lexicalHits = result.lexicalHits?.map(hit => ({
+			...hit,
+			rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), cwd),
+		}));
 		const details: FindToolDetails = {
 			query,
 			keywords,
@@ -147,6 +151,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 			cwd,
 			scopePath,
 		};
+		if (lexicalHits) details.lexicalHits = lexicalHits;
 		const where = scopePath === undefined ? "" : ` in ${scopePath}`;
 		const out: string[] = [];
 		if (coverage === "unavailable") {
@@ -170,6 +175,14 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 			for (const range of rankedHeat(hit.ranges, RANGES_SHOWN)) {
 				const span = range.start === range.end ? String(range.start) : `${range.start}-${range.end}`;
 				out.push(`  ${hit.rel}:${span}  ${range.p.toFixed(2)}  ${range.snippet}`);
+			}
+		}
+		if (lexicalHits?.length) {
+			out.push("", "unranked literal keyword matches (not semantically judged):");
+			for (const hit of lexicalHits) {
+				for (const range of hit.ranges) {
+					out.push(`  ${hit.rel}:${range.start}  ${range.snippet}`);
+				}
 			}
 		}
 		const unanswered = stats.unanswered > 0 ? ` · ${stats.unanswered} unanswered` : "";

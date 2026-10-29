@@ -3,7 +3,7 @@
  * search as the tool, printed as a ranked, colored digest (or JSON).
  */
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { formatBytes, formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
+import { formatBytes, formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { InternalUrlFilesystem, isUrlPath } from "../internal-urls/url-filesystem";
 import { openStandaloneJudge } from "../judgment/standalone";
@@ -40,8 +40,19 @@ function printReport(cmd: FindCommandArgs, rel: string, result: CascadeResult, e
 	console.log("");
 	if (coverage === "unavailable") {
 		console.log(
-			`${chalk.red("find unavailable")} ${chalk.dim(`for "${cmd.query}" in ${rel}: all ${stats.requests} judge requests failed, nothing was judged; use grep`)}`,
+			`${chalk.red("find unavailable")} ${chalk.dim(`for "${cmd.query}" in ${rel}: all ${stats.requests} judge requests failed, nothing was judged. This is not evidence of absence; use grep.`)}`,
 		);
+		if (result.lexicalHits?.length) {
+			console.log("");
+			console.log(chalk.yellow("unranked literal keyword matches (not semantically judged):"));
+			for (const hit of result.lexicalHits) {
+				for (const range of hit.ranges) {
+					console.log(
+						`  ${chalk.cyan(sanitizeText(`${hit.rel}:${range.start}`))}  ${sanitizeText(range.snippet)}`,
+					);
+				}
+			}
+		}
 	} else if (hits.length === 0) {
 		console.log(
 			`${chalk.yellow("no hits")} ${chalk.dim(`for "${cmd.query}" in ${rel} · τ ${threshold.toFixed(2)}`)}`,
@@ -119,6 +130,12 @@ export async function runFindCommand(cmd: FindCommandArgs): Promise<void> {
 				rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), cwd),
 			})),
 		};
+		if (raw.lexicalHits) {
+			result.lexicalHits = raw.lexicalHits.map(hit => ({
+				...hit,
+				rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), cwd),
+			}));
+		}
 		const elapsedMs = performance.now() - started;
 		if (cmd.json) {
 			console.log(JSON.stringify({ query: cmd.query, root: root.path, elapsedMs, ...result }, null, 2));

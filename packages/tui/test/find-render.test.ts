@@ -156,6 +156,44 @@ describe("findToolRenderer", () => {
 		expect(expanded).toContain("keywords: retry, budget");
 	});
 
+	it.each(["classic", "native"])(
+		"preserves outage locations and neutralizes source controls in %s output",
+		async surface => {
+			const uiTheme = (await getThemeByName("dark"))!;
+			const malicious = "\x1b[2J\x1b]52;c;bm90LXNlY3JldA==\x07\r";
+			const outageDetails = {
+				...details,
+				hits: [],
+				coverage: "unavailable" as const,
+				lexicalHits: [
+					{ rel: "src/auth.ts", ranges: [{ start: 12, end: 12, snippet: `refreshToken(); ${malicious}` }] },
+				],
+			};
+			const errorResult = {
+				isError: true,
+				details: outageDetails,
+				content: [
+					{
+						type: "text",
+						text: `find unavailable: ${"long query ".repeat(30)}\n\nunranked literal keyword matches:\n  src/auth.ts:12  \trefreshToken(); ${malicious}`,
+					},
+				],
+			};
+			const options = { expanded: true, isPartial: false };
+			const output =
+				surface === "classic"
+					? findToolRenderer.renderResult(errorResult, options, uiTheme, args).render(200).join("\n")
+					: JSON.stringify(findToolRenderer.describeResult(errorResult, options, args));
+			expect(output).toContain("src/auth.ts:12");
+			expect(output).toContain("refreshToken();");
+			expect(output).not.toContain("\x1b[2J");
+			expect(output).not.toContain("\x1b]52;");
+			expect(output).not.toContain("\x07");
+			expect(output).not.toContain("\r");
+			if (surface === "native") expect(output).not.toContain("\\u001b");
+		},
+	);
+
 	it("renders the streamed phase while the call is still running", async () => {
 		const uiTheme = (await getThemeByName("dark"))!;
 		const partial = findToolRenderer.renderResult(

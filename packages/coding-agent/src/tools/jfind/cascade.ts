@@ -14,12 +14,21 @@
  */
 import * as path from "node:path";
 import type { Judge, JudgmentResult, NoulQuestion } from "@oh-my-pi/pi-ai";
-import type { FindCoverage, FindHit, FindStats } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindCoverage, FindHit, FindLiteralHit, FindLiteralRange, FindStats } from "@oh-my-pi/pi-tui/tools/find";
 import type { InternalUrlFilesystem } from "../../internal-urls/url-filesystem";
 import { throwIfAborted } from "../tool-errors";
 import { fileScore, grepIndex, idf } from "./lexical";
 import { keywords as deriveKeywords } from "./keywords";
-import { type HeatRange, mergeHeat, type Passage, plainContent, selectWindows, sketch, windows } from "./passages";
+import {
+	type HeatRange,
+	literalRanges,
+	mergeHeat,
+	type Passage,
+	plainContent,
+	selectWindows,
+	sketch,
+	windows,
+} from "./passages";
 import { nameBatch, passageBatch, passageKey, entryKey, type Request, type SketchCard, sketchBatch } from "./questions";
 import { lines, readText, ReadTextError, takeChars } from "./text";
 import { type FileEntry, listFiles, type SearchRoot } from "./tree";
@@ -73,6 +82,8 @@ export interface CascadeOptions {
 export interface CascadeResult {
 	/** Files whose verified passages cleared the threshold, strongest first. */
 	hits: FindHit[];
+	/** Unranked literal locations, present only when semantic coverage is unavailable. */
+	lexicalHits?: FindLiteralHit[];
 	/** Whether the judge answered; an empty `hits` proves nothing when `unavailable`. */
 	coverage: FindCoverage;
 	threshold: number;
@@ -85,6 +96,7 @@ interface FilePlan {
 	total: number;
 	truncated: boolean;
 	passages: Passage[];
+	literalRanges?: FindLiteralRange[];
 }
 
 type Answers = JudgmentResult<Record<string, NoulQuestion>>;
@@ -224,6 +236,7 @@ class Cascade {
 			});
 			onProgress?.(`filename ranking ${named}/${ranked.length}`);
 		});
+		const collectLiteral = nameJobs.length > 0 && keywords.length > 0 && this.stats.failed === this.stats.requests;
 
 		// The two strongest lexical candidates are read regardless of the name
 		// judgment; the rest of the budget follows name score, then lexical rank.
@@ -241,7 +254,9 @@ class Cascade {
 					const read = await readText(filesystem, entry.path, READ_LIMIT);
 					const passages = selectWindows(windows(read.text, WINDOW_BYTES, keywords, weights), WINDOWS);
 					if (passages.length === 0) return undefined;
-					return { node, total: lines(read.text).length, truncated: read.truncated, passages };
+					const plan: FilePlan = { node, total: lines(read.text).length, truncated: read.truncated, passages };
+					if (collectLiteral) plan.literalRanges = literalRanges(read.text, keywords);
+					return plan;
 				} catch (error) {
 					// Binary and blank files are expected misses, not failures worth reporting.
 					if (!(error instanceof ReadTextError) || error.kind === "io") this.#fail(`read ${entry.rel}`, error);
@@ -356,7 +371,18 @@ class Cascade {
 		hits.sort((a, b) => b.contentScore - a.contentScore);
 		const { requests, failed } = this.stats;
 		const coverage: FindCoverage = failed === 0 ? "complete" : failed === requests ? "unavailable" : "partial";
-		return { hits, coverage, threshold: THRESHOLD, keywords, stats: this.stats };
+		const result: CascadeResult = { hits, coverage, threshold: THRESHOLD, keywords, stats: this.stats };
+		if (coverage === "unavailable") {
+			const lexicalHits: FindLiteralHit[] = [];
+			for (const plan of files) {
+				if (plan.literalRanges?.length) {
+					lexicalHits.push({ rel: entries[plan.node]!.rel, ranges: plan.literalRanges });
+				}
+			}
+			lexicalHits.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+			result.lexicalHits = lexicalHits;
+		}
+		return result;
 	}
 }
 
