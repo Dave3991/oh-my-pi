@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ToolCallLoopGuard` accepts an `exemptionAlias` option: a second name per tool call that `exemptTools` can match, for calls that dispatch another tool through a transport tool.
+
 ### Changed
 
 - `auth.accountPolicies` `priority` now outranks a momentarily missing usage report, so new sessions stay on the preferred account ([#15124](https://github.com/can1357/oh-my-pi/pull/15124) by [@will-bogusz](https://github.com/will-bogusz))

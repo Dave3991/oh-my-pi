@@ -87,6 +87,16 @@ export function isProposeToolCall(toolCall: { name: string; arguments?: Record<s
 }
 
 /**
+ * The `xd://` device a `write` tool call dispatches to (`mcp__peers_wait` for a write to
+ * `xd://mcp__peers_wait`), or `undefined` for any other call. The loop guard matches it
+ * against `model.toolCallLoopGuard.exemptTools` in addition to the tool name.
+ */
+export function writeDeviceName(toolCall: { name: string; arguments?: Record<string, unknown> }): string | undefined {
+	const path = toolCallWritePath(toolCall);
+	return path === undefined ? undefined : (parseXdUrl(path)?.name ?? undefined);
+}
+
+/**
  * The XdevDispatch metadata carried on a completed `write` execution result, or
  * `undefined` when the execution was not a device dispatch. Consumers check
  * `.tool` (e.g. `PROPOSE_DEVICE_NAME` for plan-mode decision tracking and the
