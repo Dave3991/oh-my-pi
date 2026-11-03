@@ -118,4 +118,101 @@ describe("AgentSession tool-call loop guard", () => {
 		expect(redirects).toHaveLength(1);
 		expect(redirects[0]!.display).toBe(false);
 	});
+
+	describe("xd:// device writes", () => {
+		// The model repeats one `write` to an MCP device, as an agent does while it long-polls
+		// `xd://mcp__peers_wait`; returns how many loop redirects the session injected.
+		async function redirectsForRepeatedDeviceWrite(exemptTools: string[]): Promise<number> {
+			const model = createMockModel({ provider: "openai", id: "gpt-test" }).model;
+			const writeTool: AgentTool = {
+				name: "write",
+				label: "Write",
+				description: "Mock write tool",
+				parameters: type({ "path?": "string", "content?": "string" }),
+				execute: async () => ({
+					content: [{ type: "text" as const, text: '{"cursor":1,"items":[],"timed_out":true}' }],
+				}),
+			};
+			let callCount = 0;
+			const agent = new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [writeTool], messages: [] },
+				convertToLlm,
+				streamFn: () => {
+					const toolCallTurn = callCount < 2;
+					const toolCallId = `tc-${callCount}`;
+					callCount++;
+					const message: AssistantMessage = toolCallTurn
+						? {
+								role: "assistant",
+								content: [
+									{
+										type: "toolCall",
+										id: toolCallId,
+										name: "write",
+										arguments: { path: "xd://mcp__peers_wait", content: "{}" },
+									},
+								],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: zeroUsage,
+								stopReason: "toolUse",
+								timestamp: Date.now(),
+							}
+						: {
+								role: "assistant",
+								content: [{ type: "text", text: "Review arrived." }],
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: zeroUsage,
+								stopReason: "stop",
+								timestamp: Date.now(),
+							};
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "done", reason: toolCallTurn ? "toolUse" : "stop", message });
+					});
+					return stream;
+				},
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"todo.enabled": false,
+				"model.toolCallLoopGuard.enabled": true,
+				"model.toolCallLoopGuard.threshold": 2,
+				"model.toolCallLoopGuard.exemptTools": exemptTools,
+			});
+			settings.setModelRole("default", `${model.provider}/${model.id}`);
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(tempDir.path()),
+				settings,
+				modelRegistry: new ModelRegistry(authStorage),
+				toolRegistry: new Map([[writeTool.name, writeTool]]),
+			});
+
+			await session.prompt("wait for the review");
+			await session.waitForIdle();
+
+			return session.agent.state.messages.filter(
+				(message): message is CustomMessage =>
+					message.role === "custom" && message.customType === "tool-call-loop-redirect",
+			).length;
+		}
+
+		it("lets a write to a device named in exemptTools repeat", async () => {
+			expect(await redirectsForRepeatedDeviceWrite(["wait", "mcp__peers_wait"])).toBe(0);
+		});
+
+		it("still redirects a repeated device write when neither the device nor write is exempt", async () => {
+			expect(await redirectsForRepeatedDeviceWrite(["wait"])).toBe(1);
+		});
+
+		it("keeps exempting device writes when the write tool itself is exempt", async () => {
+			expect(await redirectsForRepeatedDeviceWrite(["wait", "write"])).toBe(0);
+		});
+	});
 });

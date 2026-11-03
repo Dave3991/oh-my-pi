@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an `exemptionAlias` option to `ToolCallLoopGuard`: a second name per tool call that `exemptTools` can match, for calls that dispatch another tool through a transport tool
+
 ## [18.18.4] - 2026-11-09
 
 ### Added
