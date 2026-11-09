@@ -81,6 +81,11 @@ export interface BashToolDetails {
 	exitCode?: number;
 	/** True when the command was killed by its timeout deadline (not a failure). */
 	timedOut?: boolean;
+	/**
+	 * Notices the result text puts before and after the command output (timeout, wall time, exit code). Set
+	 * when an artifact holds the output alone, so a reader of the artifact can return the same text.
+	 */
+	outputNotices?: { prefix: string; suffix: string };
 	/** Text the command wrote to `out://`, oldest first; transcripts draw each as a reply after the call. */
 	replies?: string[];
 	/**

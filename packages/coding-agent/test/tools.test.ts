@@ -1165,7 +1165,14 @@ describe("Coding Agent Tools", () => {
 
 				// Block context is unbounded by the line budget, so that page still spills.
 				const closers = await read(`${nested}:${depth + 1}-${depth * 2}`);
-				expect(closers.details?.meta?.truncation?.artifactId).toBeDefined();
+				// read's own artifact-less head cut means the spilled text is not the full output, so no
+				// artifact claims it; the rest stays re-readable from the source via nextOffset.
+				expect(closers.details?.meta?.truncation?.artifactId).toBeUndefined();
+				const closersNextOffset = closers.details?.meta?.truncation?.nextOffset;
+				expect(closersNextOffset).toBeGreaterThan(depth + 1);
+				expect(closersNextOffset).toBeLessThanOrEqual(depth * 2);
+				expect(getTextOutput(closers)).toContain(`Use :${closersNextOffset} to continue`);
+				expect(getTextOutput(closers)).not.toContain("artifact://");
 				expect(Buffer.byteLength(getTextOutput(closers), "utf-8")).toBeLessThan(20 * 1024);
 			} finally {
 				await spillManager.close();

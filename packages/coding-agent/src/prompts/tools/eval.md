@@ -40,6 +40,7 @@ await sh(command, { cwd?, timeout? })  await sh`cmd ${arg}` — embedded bash en
 ```
 {{/if}}
 {{/ifAll}}
+`tool.<name>()` returns a string (text-only result) or `{ text, details, hasError?, incomplete? }`: `text` is the complete tool output, not the display cut; `incomplete` is set when the full text could not be restored.
 {{#if toolNames}}Session tool names: {{#each toolNames}}`{{this}}`{{#unless @last}}, {{/unless}}{{/each}}.{{/if}}
 </prelude>
 

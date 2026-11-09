@@ -11,7 +11,7 @@ import { shadowPlanIfPresent, snapshotVmContext } from "../js/context-manager";
 import type { RuntimeCallIdentity } from "../js/shared/runtime";
 import { shadowSnapshotDigest } from "../js/shared/runtime";
 import type { JsStatusEvent } from "../js/shared/types";
-import { bridgeValueFromToolResult } from "../js/tool-bridge";
+import { bridgeValueFromToolResult, resolveBridgeResult } from "../js/tool-bridge";
 import { namespaceSessionId as namespacePythonSessionId } from "../py";
 import { shadowPlanPythonIfPresent, snapshotPythonNamespaceIfPresent } from "../py/executor";
 import { type ShadowClaimKey, ShadowClaimStore } from "./claim-store";
@@ -265,7 +265,9 @@ export class EvalShadowCellSession implements ToolSpeculationStreamSession {
 		);
 		if (!outcome || signal?.aborted) return undefined;
 		const committed = await outcome.value.handle.commit(outcome.value.args);
-		if (committed) this.#noteCommittedResult(outcome.value.operationId, outcome.value.name, normalized, committed);
+		if (committed) {
+			await this.#noteCommittedResult(outcome.value.operationId, outcome.value.name, normalized, committed);
+		}
 		return committed;
 	}
 
@@ -276,18 +278,25 @@ export class EvalShadowCellSession implements ToolSpeculationStreamSession {
 	 * pre-commit physical outcome: commit policies can transform the value (e.g. a
 	 * repeat-read hint appended on the third identical read), and admitting from
 	 * the physical result would start speculative I/O for arguments the
-	 * authoritative cell never uses. Never throws: this runs on the authoritative
-	 * claim path, where a projection failure must degrade to unadmitted
-	 * dependents, never to a failed cell.
+	 * authoritative cell never uses. The value is the one the cell receives, with
+	 * a cut result's complete text restored. Never rejects: this runs on the
+	 * authoritative claim path, where a projection failure must degrade to
+	 * unadmitted dependents, never to a failed cell.
 	 */
-	#noteCommittedResult(
+	async #noteCommittedResult(
 		operationId: string,
 		name: string,
 		args: Readonly<Record<string, unknown>>,
 		committed: AgentToolResult<unknown>,
-	): void {
+	): Promise<void> {
 		try {
-			const value = bridgeValueFromToolResult(name, args, committed);
+			const value = bridgeValueFromToolResult(
+				name,
+				args,
+				committed,
+				undefined,
+				await resolveBridgeResult(committed, this.#options.session),
+			);
 			this.#results.set(operationId, {
 				value,
 				origins: [{ kind: "local_read", resource: String(args.path ?? "") }],
@@ -316,7 +325,13 @@ export class EvalShadowCellSession implements ToolSpeculationStreamSession {
 	): Promise<unknown | undefined> {
 		const result = await this.claim(name, args, identity, remainingTimeoutMs);
 		if (!result) return undefined;
-		return bridgeValueFromToolResult(name, args, result, this.#options.emitStatus);
+		return bridgeValueFromToolResult(
+			name,
+			args,
+			result,
+			this.#options.emitStatus,
+			await resolveBridgeResult(result, this.#options.session),
+		);
 	}
 
 	async #project(code: string, language: string): Promise<ShadowPlan | null> {

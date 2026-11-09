@@ -5,6 +5,7 @@
 ### Added
 
 - The `wait` result's `JobSnapshot` now carries `settledAtMs` (epoch ms when the run settled, absent while it is still running), so a snapshot can tell a result that finished during the call from one recovered from an earlier, never-delivered completion ([#18635](https://github.com/can1357/oh-my-pi/pull/18635) by [@yuzu-octopus](https://github.com/yuzu-octopus))
+- `BashToolDetails.outputNotices` records the notices a bash result puts before and after the command output when an artifact holds that output, so a reader of the artifact can return the same text
 
 ### Fixed
 

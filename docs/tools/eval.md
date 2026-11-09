@@ -190,13 +190,40 @@ absent when the server supplies no structured result; OMP does not infer it from
 JSON-looking text. Error results can also carry structured data, so check
 `hasError` before treating a payload as a successful result.
 
-`text` remains the model-facing rendering, including any JSON echo and output
-truncation notices. Truncation does not trim `details.structuredContent`: code
-receives the complete server-supplied object even when the rendering spills. Use
-server-side pagination/bounds for large data and print only the fields needed
-by the model. The object is not validated against the server's output schema or
-treated as trusted. Ordinary tools keep their existing return shapes, including
-bare strings for text-only results without details.
+`text` remains the model-facing rendering, including any JSON echo; a rendering
+cut for display is replaced by its complete text (see below). Truncation does not
+trim `details.structuredContent`: code receives the complete server-supplied
+object even when the rendering spills. Use server-side pagination/bounds for
+large data and print only the fields needed by the model. The object is not
+validated against the server's output schema or treated as trusted. Ordinary
+tools keep their existing return shapes, including bare strings for text-only
+results without details.
+
+### Results cut for display
+
+A tool result over the display limit is cut for the model, and its full output is
+saved as an artifact of the session. The cut is a window (lines or bytes dropped
+from the output) or a column cut (long lines cut to `tools.outputMaxColumns`).
+`tool.<name>()` returns the complete text instead of the cut: it reads the
+artifact the producing tool saved (for a `write` to an `xd://` device, the
+device's own), and only from the calling session's own storage.
+
+The complete text has the shape of an uncut result. `bash` output keeps the
+lines the tool adds around it: `[Command timed out after N seconds]`,
+`Wall time: …` and `Command exited with code N`. The same facts are in
+`hasError`, `details.timedOut` and `details.exitCode`. A result with several
+text blocks is joined with a newline between the blocks, cut or not.
+
+When the complete text cannot be read, `text` is the cut with its notice, and
+the object carries `incomplete: { artifactId?, reason }`: `"sample"` when the
+artifact keeps only a head/tail sample, `"unreadable"` when the session cannot
+read it or no artifact was saved (such as a `glob` or `grep` listing cut at the
+tool's own byte cap). Python callers read `result.get("incomplete")`. The cell's
+status lines still describe the cut the model saw.
+
+A page is not a cut. A `read` of a line range, or of one page of a longer file,
+returns that page without `incomplete`;
+`details.meta.truncation.nextOffset` is the line the next page starts at.
 
 ### `completion()`
 

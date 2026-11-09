@@ -5,7 +5,7 @@ import {
 	validateAgentToolArguments,
 } from "@oh-my-pi/pi-agent-core";
 import { type ImageContent, toolWireSchema } from "@oh-my-pi/pi-ai";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
 import { committedTodoPhases } from "../../tools/todo";
@@ -63,6 +63,20 @@ export interface ToolBridgeOptions {
 	onReply?: (text: string) => void;
 }
 
+/** Why a bridged value's `text` is the displayed cut of a tool's output rather than the complete output. */
+export interface BridgeIncomplete {
+	/**
+	 * Artifact the deciding cut names; absent when a cut saved none (a failed spill or capture, a tool's
+	 * own byte cap) or when the window and column cuts name different artifacts.
+	 */
+	artifactId?: string;
+	/** `sample`: the artifact holds only a head/tail sample. `unreadable`: the owning session cannot read the output. */
+	reason: "sample" | "unreadable";
+}
+
+/** What {@link resolveBridgeResult} found behind a displayed cut: the complete text, or why there is none. */
+export type BridgeResolution = { text: string } | { incomplete: BridgeIncomplete };
+
 type ToolValue =
 	| string
 	| EvalBudgetResult
@@ -80,6 +94,7 @@ type ToolValue =
 			details?: unknown;
 			images?: Omit<ImageContent, "type">[];
 			hasError?: boolean;
+			incomplete?: BridgeIncomplete;
 	  };
 function toolResultHasError(result: AgentToolResult): boolean {
 	if (isRecord(result) && result.isError === true) return true;
@@ -170,11 +185,125 @@ function summarizePreludeResult(session: ToolSession): StatusSummarizer {
 	};
 }
 
+/**
+ * One display cut a result's `meta` records: a window cut (`truncation`) or a column cut (`limits.columnTruncated`).
+ * The window of a paged source (`pagedSource`) is the page the caller asked for, not a cut.
+ */
+interface DisplayCut {
+	/** Artifact holding the output the cut dropped; undefined when none was saved. */
+	artifactId: string | undefined;
+	/** The artifact keeps only a head/tail sample of the output. */
+	sampled: boolean;
+}
+
+/**
+ * The display cuts that decide whether a result's text is complete: those of the deepest level that records
+ * any, across `details` and each `xdev.inner` an `xd://` dispatch nests. xd layers pass the inner content
+ * through unchanged, so only the producing tool's artifact holds its original output; an outer cut of
+ * already-cut text never does. `prefix` and `suffix` are the notices that level's tool put around the output
+ * its artifact holds (`details.outputNotices`).
+ */
+function decidingCuts(details: unknown): { cuts: DisplayCut[]; prefix: string; suffix: string } {
+	let deciding = { cuts: [] as DisplayCut[], prefix: "", suffix: "" };
+	let level = details;
+	while (isRecord(level)) {
+		if (isRecord(level.meta)) {
+			const cuts: DisplayCut[] = [];
+			const column = isRecord(level.meta.limits) ? level.meta.limits.columnTruncated : undefined;
+			const window = level.meta.pagedSource === true ? undefined : level.meta.truncation;
+			for (const record of [window, column]) {
+				if (!isRecord(record)) continue;
+				cuts.push({
+					artifactId: typeof record.artifactId === "string" ? record.artifactId : undefined,
+					sampled: typeof record.artifactElidedBytes === "number" && record.artifactElidedBytes > 0,
+				});
+			}
+			if (cuts.length > 0) {
+				const notices = isRecord(level.outputNotices) ? level.outputNotices : {};
+				deciding = {
+					cuts,
+					prefix: typeof notices.prefix === "string" ? notices.prefix : "",
+					suffix: typeof notices.suffix === "string" ? notices.suffix : "",
+				};
+			}
+		}
+		level = isRecord(level.xdev) ? level.xdev.inner : undefined;
+	}
+	return deciding;
+}
+
+/**
+ * The text of artifact `ref` (an id or `artifact://id`) that the owning `session` holds: its in-memory spill,
+ * then the file its own artifact manager names. `null` when the session holds no such artifact or cannot read
+ * it. Other sessions are never searched: artifact ids are per-session counters, so their files can share an id.
+ */
+async function readOwnedArtifactText(session: ToolSession, ref: string): Promise<string | null> {
+	const id = ref.startsWith("artifact://") ? ref.slice("artifact://".length) : ref;
+	const inMemory = session.sessionManager?.getArtifactContent?.(id) ?? null;
+	if (inMemory !== null) return inMemory;
+	const artifactPath = await session.getArtifactManager?.()?.getPath(id);
+	if (!artifactPath) return null;
+	try {
+		return await Bun.file(artifactPath).text();
+	} catch (error) {
+		logger.debug("eval bridge: artifact unreadable", { id, error: String(error) });
+		return null;
+	}
+}
+
+/**
+ * The complete text of a result whose text was cut for display, read only from the owning `session`:
+ * its in-memory spill, then its own artifact manager. Artifact ids are per-session counters, so another
+ * session's file with the same id is never used. The notices the producing tool put around its output are
+ * re-attached, so the text has the shape of an uncut result. `undefined` when the result was not cut.
+ */
+async function readBridgeResolution(
+	result: AgentToolResult,
+	session: ToolSession,
+): Promise<BridgeResolution | undefined> {
+	const { cuts, prefix, suffix } = decidingCuts(result.details);
+	if (cuts.length === 0) return undefined;
+	if (cuts.some(cut => cut.artifactId === undefined)) return { incomplete: { reason: "unreadable" } };
+	const sampled = cuts.find(cut => cut.sampled)?.artifactId;
+	if (sampled !== undefined) return { incomplete: { artifactId: sampled, reason: "sample" } };
+	const artifactId = cuts[0]?.artifactId;
+	// Cuts naming different artifacts leave no single artifact holding the whole output.
+	if (artifactId === undefined || cuts.some(cut => cut.artifactId !== artifactId)) {
+		return { incomplete: { reason: "unreadable" } };
+	}
+	const text = await readOwnedArtifactText(session, artifactId);
+	return text === null ? { incomplete: { artifactId, reason: "unreadable" } } : { text: `${prefix}${text}${suffix}` };
+}
+
+/**
+ * Resolutions already read, by result. A speculative claim resolves its committed result twice: for the
+ * dependents it admits, then for the value the cell receives.
+ */
+const resolutions = new WeakMap<AgentToolResult, Promise<BridgeResolution | undefined>>();
+
+/** {@link readBridgeResolution}, reading the artifact of one result only once. */
+export function resolveBridgeResult(
+	result: AgentToolResult,
+	session: ToolSession,
+): Promise<BridgeResolution | undefined> {
+	let resolution = resolutions.get(result);
+	if (!resolution) {
+		resolution = readBridgeResolution(result, session);
+		resolutions.set(result, resolution);
+	}
+	return resolution;
+}
+
+/**
+ * The value a bridged call returns to cell code. Status events summarize the displayed text; with a
+ * `resolution` ({@link resolveBridgeResult}) the value carries the complete text or an `incomplete` marker.
+ */
 export function bridgeValueFromToolResult(
 	name: string,
 	args: unknown,
 	result: AgentToolResult,
 	emitStatus?: (event: JsStatusEvent) => void,
+	resolution?: BridgeResolution,
 	summarize: StatusSummarizer = summarizeToolResult,
 ): ToolValue {
 	const textBlocks = result.content.filter(
@@ -185,18 +314,27 @@ export function bridgeValueFromToolResult(
 		(content): content is ImageContent =>
 			content.type === "image" && typeof content.mimeType === "string" && typeof content.data === "string",
 	);
-	const text = textBlocks.map(block => block.text).join("");
+	// Joined as the artifact spill saves them (non-empty blocks, "\n" between), so cut and uncut text agree.
+	const text = textBlocks
+		.map(block => block.text)
+		.filter(Boolean)
+		.join("\n");
 	const hasError = toolResultHasError(result);
 	if (emitStatus) {
 		const event = summarize(name, args, result, text, hasError);
 		if (event) emitStatus(event);
 	}
+	// A cut result always carries details, so a resolution never reaches this bare-string return.
 	if (result.details === undefined && imageBlocks.length === 0 && !hasError) return text;
-	const value: Exclude<ToolValue, string> = { text, details: result.details };
+	const value: Exclude<ToolValue, string> = {
+		text: resolution && "text" in resolution ? resolution.text : text,
+		details: result.details,
+	};
 	if (imageBlocks.length > 0) {
 		value.images = imageBlocks.map(({ type: _type, ...image }) => image);
 	}
 	if (hasError) value.hasError = true;
+	if (resolution && "incomplete" in resolution) value.incomplete = resolution.incomplete;
 	return value;
 }
 
@@ -244,6 +382,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 				request.parameters,
 				result,
 				options.emitStatus,
+				await resolveBridgeResult(result, options.session),
 				summarizePreludeResult(options.session),
 			);
 		} catch (error) {
@@ -331,7 +470,15 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			options.signal,
 		);
 		options.signal?.throwIfAborted();
-		if (claimed) return bridgeValueFromToolResult(name, validatedArgs, claimed, options.emitStatus);
+		if (claimed) {
+			return bridgeValueFromToolResult(
+				name,
+				validatedArgs,
+				claimed,
+				options.emitStatus,
+				await resolveBridgeResult(claimed, options.session),
+			);
+		}
 	}
 	let settled = false;
 	const onUpdate: AgentToolUpdateCallback | undefined =
@@ -373,7 +520,13 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			if (!options.onReply) throw new ToolError(NO_REPLY_SINK);
 			for (const text of replies) options.onReply(text);
 		}
-		return bridgeValueFromToolResult(name, validatedArgs, result, options.emitStatus);
+		return bridgeValueFromToolResult(
+			name,
+			validatedArgs,
+			result,
+			options.emitStatus,
+			await resolveBridgeResult(result, options.session),
+		);
 	} catch (error) {
 		options.emitStatus?.({
 			op: name,

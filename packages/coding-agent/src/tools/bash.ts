@@ -871,6 +871,15 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		// Native history is bounded; retain it whole so persisted calls remain replayable.
 		const trace = "trace" in result ? result.trace : undefined;
 		if (trace) details.trace = trace;
+		// The sink's artifact holds the command output alone. Record what the result text puts around it: the
+		// sink's timeout notice on the first line (whichever wording the executor chose) and every line after.
+		const recordOutputNotices = (): void => {
+			if (!result.artifactId) return;
+			const out = normalizeResultOutput(result);
+			const prefix = isTimeout && out.startsWith("[Command timed out") ? out.slice(0, out.indexOf("\n") + 1) : "";
+			const suffix = outputLines.length > 1 ? `\n${outputLines.slice(1).join("\n")}` : "";
+			if (prefix || suffix) details.outputNotices = { prefix, suffix };
+		};
 
 		// Final-defense inline cap config, shared by the timeout and normal
 		// completion paths. The sink already bounds inline bodies to the spill
@@ -896,6 +905,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			if (lead !== `[${message}]` && !lead.startsWith(`[${message}]\n`)) {
 				outputLines.push("", `[${message}]`);
 			}
+			recordOutputNotices();
 			const timeoutOutputText = await enforceInlineByteCap(outputLines.join("\n"), inlineCap);
 			const timeoutBuilder = toolResult(details).content([
 				{ type: "text", text: timeoutOutputText },
@@ -909,6 +919,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		this.#throwIfUnfinished(result, timeoutSec, outputText);
 		await invalidateGithubCacheForBashResult(options.command, options.cwd, result);
 
+		recordOutputNotices();
 		// No-op for already-bounded output; see `inlineCap` above.
 		const cappedOutputText = await enforceInlineByteCap(outputText, inlineCap);
 

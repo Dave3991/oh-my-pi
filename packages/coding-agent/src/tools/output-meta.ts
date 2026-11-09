@@ -576,7 +576,9 @@ export function resolveOutputSinkArtifactMaxBytes(s: Settings | undefined): numb
  * as a session artifact and replace the content with a head+tail (middle
  * elision) view plus an artifact reference. When `tools.artifactHeadBytes`
  * is 0, falls back to tail-only truncation. Skips when the tool already
- * saved its own artifact (e.g. bash/python via OutputSink).
+ * saved its own artifact (e.g. bash/python via OutputSink). Text the tool
+ * already cut without an artifact is cut again but saved nowhere: no artifact
+ * would hold its full output.
  */
 async function spillLargeResultToArtifact(
 	result: AgentToolResult,
@@ -626,9 +628,14 @@ async function spillLargeResultToArtifact(
 	// `enforceInlineByteCap`: always truncate past the threshold, and only
 	// attach the `artifact://` recovery link when the save actually succeeded.
 	let artifactId: string | undefined;
-	// A failed stream capture only left a preview here. Saving that preview
-	// would invent a misleading full-output recovery link, not recover the log.
-	if (!existingMeta?.artifactError) {
+	// Only a preview reached this point when a stream capture failed, or when the
+	// tool already cut its output to a window without saving an artifact (such as
+	// glob's or grep's fixed byte cap; a cut with an artifact returned above).
+	// Saving that preview would invent a misleading full-output recovery link,
+	// and the window record below replaces the tool's own, so nothing would say
+	// the saved text was already cut. A column cut keeps its own record in
+	// `limits`, so it still says so.
+	if (!existingMeta?.artifactError && !existingMeta?.truncation) {
 		try {
 			artifactId = await sessionManager.saveArtifact(fullText, toolName);
 		} catch (error) {
