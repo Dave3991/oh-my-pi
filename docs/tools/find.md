@@ -38,7 +38,7 @@ Use `find` first when the implementing location is unknown. Use `grep` for known
 
 ## Outputs
 
-- Single text block, strongest hit first:
+- Successful semantic output is a single text block, strongest hit first:
    - header `N hit(s) for "query" (τ 0.20), strongest first`
    - per hit: `path  score  N lines judged[, partial]`, then up to three `path:start-end  p  snippet` rows (strongest range first)
    - footer with `listed`, `judged`, files read and bytes sent, request count (plus `N unanswered` when a successful response left questions without a usable answer), input tokens, cost, and wall/API time
@@ -47,8 +47,12 @@ Use `find` first when the implementing location is unknown. Use `grep` for known
 - Some judge requests failed: a `partial: F of R judge requests failed; unjudged files may still match` line follows the header.
 - The 20 s budget ran out during verification after at least one hit was verified: the hits verified so far are returned, followed by ``partial: timed out after 20.0s with V of P passages verified; unverified files may still match. Narrow `path` for a complete search.``; `coverage` is `partial`, `details.timeout` holds `verified` and `passages`, and the renderer shows `timed out, V/P passages verified`.
 - Every judge request failed (for example no judge configured, or the provider rejects the account): the header reads `find unavailable for "query": all R judge requests failed, nothing was judged. This is not evidence of absence; use grep.` and the result is an error. `omp find` prints the same status and exits 1.
+  - When literal keywords match already-read eligible content, the error also includes `unranked literal keyword matches (not semantically judged):` followed by `path:line  snippet` rows without scores. These are keyword evidence, not semantic relevance judgments.
+  - No extra filesystem scan is performed. Evidence is limited to the selected files and their read prefixes: up to 20 files, three matching lines per file, and 100 Unicode code points per snippet. The same scope, hidden/symlink, credential, binary and read-size filters apply. Snippets show bounded source content from unjudged files; terminal views sanitize control sequences.
+  - Empty literal evidence does not prove absence: unmatched, unselected and unread content has not received a semantic judgment. Successful negative judgments and partial semantic recovery never expose this fallback.
 - When `path` narrows the search, the header reads `N hit(s) for "query" in <dir>/ …` and the renderer shows `in <dir>/`.
 - `details`: `query`, `keywords` (lexical keywords used), `threshold`, `hits` (`rel` as a readable host path or URL, `nameScore`, `contentScore`, merged `ranges` with `start`/`end`/`p`/`snippet`, `linesSeen`, `truncated`), `coverage` (`complete`, `partial`, or `unavailable`, from `stats.failed` vs `stats.requests`, and `partial` when the budget cut verification short; also in `omp find --json`), `stats` (`failed` counts failed judge requests, `unanswered` counts unusable answers), `timeout` (set when the budget cut verification short), `elapsedMs`, `cwd` (hyperlink base), and `scopePath` (display form of `path`, absent when searching the cwd).
+- With unavailable semantic coverage, `details.lexicalHits` (also in `omp find --json`) contains separate unscored `{ rel, ranges: [{ start, end, snippet }] }` entries in path order. It is absent for complete/partial coverage; semantic `hits` remains empty on total judge failure. Error status and CLI exit 1 remain even when literal evidence exists.
 - Streaming: phase progress (`lexical scan`, `filename ranking 64/128`, `verifying 8 passages in 5 files`, …) is emitted through `onUpdate` and shown in the transcript header while the call runs.
 
 ## Flow
